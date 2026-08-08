@@ -13,7 +13,7 @@ const PORT = process.env.PORT || 3000;
 // Set WRITE_PASSWORD in Railway variables; falls back to the app's shared password.
 const WRITE_PASSWORD = process.env.WRITE_PASSWORD || "SpaldingUnited26";
 // Only these dataset names are allowed, so nobody can spam arbitrary rows.
-const ALLOWED = new Set(["sponsors", "jobs"]);
+const ALLOWED = new Set(["sponsors", "jobs", "fixtures", "matchAnswers", "recipients"]);
 
 if (!process.env.DATABASE_URL) {
   console.error("No DATABASE_URL set. Add a Postgres database in Railway and it will be provided automatically.");
@@ -36,9 +36,14 @@ async function initDb() {
       updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
   `);
-  // Ensure both rows exist so GET always returns something.
+  // Ensure rows exist so GET always returns something.
   await pool.query(`
-    INSERT INTO datasets (name, data) VALUES ('sponsors', '[]'::jsonb), ('jobs', '[]'::jsonb)
+    INSERT INTO datasets (name, data) VALUES
+      ('sponsors', '[]'::jsonb),
+      ('jobs', '[]'::jsonb),
+      ('fixtures', '[]'::jsonb),
+      ('recipients', '[]'::jsonb),
+      ('matchAnswers', '{}'::jsonb)
     ON CONFLICT (name) DO NOTHING;
   `);
   console.log("Database ready.");
@@ -84,7 +89,9 @@ app.put("/api/:name", async (req, res) => {
   if (pass !== WRITE_PASSWORD) return res.status(401).json({ error: "Wrong write password" });
 
   const data = req.body && req.body.data;
-  if (!Array.isArray(data)) return res.status(400).json({ error: "Body must be { data: [...] }" });
+  if (data === undefined || data === null || typeof data !== "object") {
+    return res.status(400).json({ error: "Body must be { data: [...] } or { data: {...} }" });
+  }
 
   try {
     const { rows } = await pool.query(
