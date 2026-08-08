@@ -13,7 +13,7 @@ const PORT = process.env.PORT || 3000;
 // Set WRITE_PASSWORD in Railway variables; falls back to the app's shared password.
 const WRITE_PASSWORD = process.env.WRITE_PASSWORD || "SpaldingUnited26";
 // Only these dataset names are allowed, so nobody can spam arbitrary rows.
-const ALLOWED = new Set(["sponsors", "jobs", "fixtures", "matchAnswers", "recipients"]);
+const ALLOWED = new Set(["sponsors", "jobs", "fixtures", "matchAnswers", "recipients", "squad"]);
 
 if (!process.env.DATABASE_URL) {
   console.error("No DATABASE_URL set. Add a Postgres database in Railway and it will be provided automatically.");
@@ -43,6 +43,7 @@ async function initDb() {
       ('jobs', '[]'::jsonb),
       ('fixtures', '[]'::jsonb),
       ('recipients', '[]'::jsonb),
+      ('squad', '[]'::jsonb),
       ('matchAnswers', '{}'::jsonb)
     ON CONFLICT (name) DO NOTHING;
   `);
