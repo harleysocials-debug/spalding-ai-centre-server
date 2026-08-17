@@ -13,7 +13,7 @@ const PORT = process.env.PORT || 3000;
 // Set WRITE_PASSWORD in Railway variables; falls back to the app's shared password.
 const WRITE_PASSWORD = process.env.WRITE_PASSWORD || "SpaldingUnited26";
 // Only these dataset names are allowed, so nobody can spam arbitrary rows.
-const ALLOWED = new Set(["sponsors", "jobs", "fixtures", "matchAnswers", "recipients", "squad"]);
+const ALLOWED = new Set(["sponsors", "jobs", "fixtures", "matchAnswers", "recipients", "squad", "salary", "ticketRequests"]);
 
 if (!process.env.DATABASE_URL) {
   console.error("No DATABASE_URL set. Add a Postgres database in Railway and it will be provided automatically.");
@@ -44,7 +44,9 @@ async function initDb() {
       ('fixtures', '[]'::jsonb),
       ('recipients', '[]'::jsonb),
       ('squad', '[]'::jsonb),
-      ('matchAnswers', '{}'::jsonb)
+      ('matchAnswers', '{}'::jsonb),
+      ('salary', '{}'::jsonb),
+      ('ticketRequests', '[]'::jsonb)
     ON CONFLICT (name) DO NOTHING;
   `);
   console.log("Database ready.");
@@ -56,7 +58,7 @@ app.use(express.json({ limit: "5mb" }));
 // ---- CORS: let the Netlify page (any origin) call this API ----
 app.use((req, res, next) => {
   res.header("Access-Control-Allow-Origin", "*");
-  res.header("Access-Control-Allow-Methods", "GET, PUT, OPTIONS");
+  res.header("Access-Control-Allow-Methods", "GET, PUT, POST, OPTIONS");
   res.header("Access-Control-Allow-Headers", "Content-Type, X-Write-Password");
   if (req.method === "OPTIONS") return res.sendStatus(204);
   next();
@@ -105,6 +107,67 @@ app.put("/api/:name", async (req, res) => {
   } catch (e) {
     console.error("PUT error", e);
     res.status(500).json({ error: "Could not save data" });
+  }
+});
+
+// ---- Public: append ONE ticket request (no password). ----
+// This is the only unauthenticated write. It can only add a single, sanitised
+// request to the ticketRequests list — it cannot overwrite the list, read it,
+// or touch any other dataset.
+function clip(v, n){ return (typeof v === "string" ? v : "").slice(0, n); }
+const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+app.post("/api/ticket-requests/add", async (req, res) => {
+  const b = req.body || {};
+  const requester = clip(b.requester, 120).trim();
+  const fixture   = clip(b.fixture, 200).trim();
+  const notes     = clip(b.notes, 1000).trim();
+  const oneEmail  = !!b.oneEmail;
+  const sharedEmail = clip(b.sharedEmail, 200).trim();
+
+  if (!requester) return res.status(400).json({ error: "Please provide the requester's name." });
+
+  // Sanitise the people array.
+  let people = Array.isArray(b.people) ? b.people.slice(0, 100) : [];
+  const clean = [];
+  for (const p of people) {
+    const first = clip(p && p.first, 80).trim();
+    const last  = clip(p && p.last, 80).trim();
+    if (!first && !last) continue;
+    if (!first || !last) return res.status(400).json({ error: "Each person needs a first and last name." });
+    let qty = parseInt(p && p.qty, 10); if (!(qty > 0) || qty > 200) qty = 1;
+    let email = oneEmail ? sharedEmail : clip(p && p.email, 200).trim();
+    if (!EMAIL_RE.test(email)) return res.status(400).json({ error: "A valid email is required for " + first + " " + last + "." });
+    clean.push({ first, last, email, qty });
+  }
+  if (!clean.length) return res.status(400).json({ error: "Please add at least one person." });
+  if (oneEmail && !EMAIL_RE.test(sharedEmail)) return res.status(400).json({ error: "Please provide a valid shared email address." });
+
+  const totalQty = clean.reduce((s, p) => s + p.qty, 0);
+
+  const entry = {
+    id: "tr_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 7),
+    requester, fixture, notes,
+    oneEmail, sharedEmail: oneEmail ? sharedEmail : "",
+    people: clean,
+    qty: totalQty,
+    status: "pending",
+    createdAt: new Date().toISOString()
+  };
+
+  try {
+    const { rows } = await pool.query("SELECT data FROM datasets WHERE name = 'ticketRequests'");
+    let list = rows.length && Array.isArray(rows[0].data) ? rows[0].data : [];
+    if (list.length > 5000) return res.status(429).json({ error: "Too many requests stored." });
+    list.push(entry);
+    await pool.query(
+      `INSERT INTO datasets (name, data, updated_at) VALUES ('ticketRequests', $1::jsonb, now())
+       ON CONFLICT (name) DO UPDATE SET data = EXCLUDED.data, updated_at = now()`,
+      [JSON.stringify(list)]
+    );
+    res.json({ ok: true, id: entry.id });
+  } catch (e) {
+    console.error("ticket add error", e);
+    res.status(500).json({ error: "Could not save your request. Please try again." });
   }
 });
 
